@@ -1,51 +1,56 @@
+"""
+PoC Search エージェント
+PoC/Exploitコードの検索を担当
+"""
 from __future__ import annotations
 
-from langchain_core.messages import AIMessage
-
-from state import AgentState
-from tools.security_tools import search_exploitdb, search_github
-
-# ツールリスト
-POC_TOOLS = [search_exploitdb, search_github]
+from langchain_anthropic import ChatAnthropic
+from langchain.agents import create_react_agent
+from langchain_core.prompts import ChatPromptTemplate
+from tools.security_tools import search_github_pocs
+import config
 
 
-def poc_search_node(state: AgentState) -> AgentState:
+def create_poc_search_agent():
     """
-    PoC Search エージェント
-    発見されたCVEに対してExploitDBとGitHubでPoCを検索する。
-    検索後は Operator に戻る。
+PoC Search エージェントを生成。
+GitHub APIを使用してPoCコードを検索。
     """
-    messages = list(state.get("messages", []))
-    existing_poc = list(state.get("poc_info", []))
-    search_count = state.get("poc_search_count", 0)
+    llm = ChatAnthropic(
+        model=config.MODEL_NAME,
+        api_key=config.ANTHROPIC_API_KEY,
+        temperature=0,
+    )
     
-    messages.append(AIMessage(content="PoC Search: PoC/Exploitコードを検索中..."))
+    tools = [search_github_pocs]
+    
+    system_prompt = """You are a PoC (Proof of Concept) Search Specialist.
+    
+Your responsibilities:
+1. Search for publicly available PoC and exploit code for given CVE IDs
+2. Evaluate the quality and reliability of found PoCs based on:
+   - Repository stars and activity
+   - Code quality and documentation
+   - Recent updates
+   - Community feedback
+3. Identify the most promising PoCs for testing
+4. Summarize findings with links to repositories
 
-    poc_info: list[str] = []
-    for cve in state.get("cve_list", []):
-        # ExploitDB検索（ツール使用）
-        try:
-            edb_result = search_exploitdb.invoke({"cve": cve})
-            poc_info.append(edb_result)
-            messages.append(AIMessage(content=f"  [Tool:ExploitDB] {edb_result}"))
-        except Exception as e:
-            messages.append(AIMessage(content=f"  [Tool:ExploitDB] エラー: {e}"))
-        
-        # GitHub検索（ツール使用）
-        try:
-            gh_result = search_github.invoke({"cve": cve})
-            poc_info.append(gh_result)
-            messages.append(AIMessage(content=f"  [Tool:GitHub] {gh_result}"))
-        except Exception as e:
-            messages.append(AIMessage(content=f"  [Tool:GitHub] エラー: {e}"))
+Always use the search_github_pocs tool to find relevant repositories.
+Prioritize well-maintained, popular repositories with clear documentation.
 
-    # 既存と統合して重複除去
-    all_poc = list(set(existing_poc + [p for p in poc_info if p]))
-    messages.append(AIMessage(content=f"PoC Search: 完了 - {len(all_poc)} 件 → Operator へ報告"))
-
-    return {
-        **state,
-        "poc_info": all_poc,
-        "poc_search_count": search_count + 1,
-        "messages": messages,
-    }
+When you finish your search, provide:
+- List of found PoC repositories
+- Star counts and last update dates
+- Brief assessment of each PoC's reliability
+- Recommendation on which PoCs to test first
+"""
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("human", "{input}"),
+        ("placeholder", "{agent_scratchpad}"),
+    ])
+    
+    agent = create_react_agent(llm, tools, prompt)
+    return agent

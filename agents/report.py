@@ -1,61 +1,63 @@
+"""
+Report Generator エージェント
+診断レポートの生成を担当
+"""
 from __future__ import annotations
 
-from langchain_core.messages import AIMessage
+from langchain_anthropic import ChatAnthropic
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+import config
 
-from state import AgentState
 
-
-def report_node(state: AgentState) -> AgentState:
+def create_report_generator():
     """
-    Report エージェント
-    全ての結果を集約して最終レポートを生成する。
+Report Generator を生成。
+診断結果をまとめてレポートを生成。
     """
-    target = state.get("target_ip", "unknown target")
-    cves = state.get("cve_list", [])
-    poc_info = state.get("poc_info", [])
-    exploit_results = state.get("exploit_results", "")
-    exploit_success = state.get("exploit_success", False)
-    exploit_attempts = state.get("exploit_attempts", 0)
-    phase_history = state.get("phase_history", [])
-
-    status_text = "成功" if exploit_success else "失敗"
+    llm = ChatAnthropic(
+        model=config.MODEL_NAME,
+        api_key=config.ANTHROPIC_API_KEY,
+        temperature=0,
+    )
     
-    summary_lines = [
-        f"═══════════════════════════════════════",
-        f"  Security Assessment Report",
-        f"═══════════════════════════════════════",
-        f"",
-        f"Target: {target}",
-        f"",
-        f"[ワークフロー履歴]",
-        f"  {' → '.join(phase_history)}",
-        f"",
-        f"[CVE Analysis]",
-        f"  発見された候補: {len(cves)} 件",
-        *[f"    • {cve}" for cve in cves],
-        f"",
-        f"[PoC Search]",
-        f"  発見された PoC: {len(poc_info)} 件",
-        *[f"    • {poc}" for poc in poc_info],
-        f"",
-        f"[Exploit Execution]",
-        f"  試行回数: {exploit_attempts}",
-        f"  結果: {status_text}",
-        f"",
-        f"[詳細ログ]",
-        exploit_results or "  No exploits attempted.",
-        f"",
-        f"═══════════════════════════════════════",
-    ]
+    system_prompt = """You are a Security Assessment Report Generator.
+    
+Your responsibilities:
+1. Synthesize findings from CVE analysis, PoC search, and exploit testing
+2. Create comprehensive, professional security assessment reports
+3. Prioritize findings by severity and exploitability
+4. Provide actionable remediation recommendations
+5. Use clear, professional language appropriate for technical and management audiences
 
-    final_report = "\n".join(summary_lines)
+Report Structure:
+1. Executive Summary
+   - Overview of assessment scope
+   - Key findings summary
+   - Risk level assessment
 
-    messages = list(state.get("messages", []))
-    messages.append(AIMessage(content=f"Report: 診断完了 - Exploit {status_text}（{exploit_attempts}回試行）"))
+2. Technical Findings
+   - Detailed CVE information
+   - PoC availability and testing results
+   - Exploit success/failure details
 
-    return {
-        **state,
-        "next_action": "done",
-        "final_report": final_report,
-        "messages": messages,
-    }
+3. Risk Assessment
+   - Severity ratings
+   - Impact analysis
+   - Likelihood of exploitation
+
+4. Recommendations
+   - Immediate actions required
+   - Short-term remediation steps
+   - Long-term security improvements
+
+Format the report in clear, well-structured markdown.
+"""
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("human", "{input}"),
+    ])
+    
+    chain = prompt | llm | StrOutputParser()
+    return chain
