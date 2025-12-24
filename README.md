@@ -1,92 +1,152 @@
-# AI_redteam
+# AI Red Team - セキュリティ診断ワークフロー
 
-# Role
-You are an expert Python developer specializing in LangChain and LangGraph.
+LangGraph を使用したマルチエージェント型セキュリティ診断（ペネトレーションテスト支援）システム。
 
-# Task
-I want to implement a multi-agent security assessment workflow based on the following architecture using **LangGraph**.
-Please generate a modular Python project structure suitable for VS Code.
+## 🏗️ アーキテクチャ
 
-# Architecture Overview
-
-
-```mermaid
-graph TD
-    %% スタイル定義
-    classDef agent fill:#a6c1ff,stroke:#333,stroke-width:2px,color:black;
-    classDef tool fill:#f4f9b8,stroke:#dcdcdc,stroke-width:1px,color:black,stroke-dasharray: 5 5;
-    classDef startend fill:#ffffff,stroke:#333,stroke-width:2px,rx:10,ry:10;
-
-    %% ノード定義
-    Start((START / User)):::startend
-    End((END / Report)):::startend
-
-    %% LangGraphのエージェントノード
-    subgraph Workflow [LangGraph Workflow]
-        direction TB
-        Op[Operator Agent]:::agent
-        CVE[CVE Analyst Agent]:::agent
-        PoC[PoC Search Agent]:::agent
-        Exp[Exploit Agent]:::agent
-        Rep[Report Agent]:::agent
-    end
-
-    %% ツール定義
-    T_NVD[Search NVD]:::tool
-    T_EDB[Search ExploitDB]:::tool
-    T_MITRE[Search MITRE]:::tool
-    
-    T_EDB2[Search ExploitDB]:::tool
-    T_GIT[Search Github]:::tool
-    
-    T_EXP1[Run exploit1.py]:::tool
-    T_EXP2[Run exploit2.py]:::tool
-
-    %% ワークフローの接続（実線）
-    Start -->|Target IP| Op
-    Op --> CVE
-    CVE -->|CVE List| PoC
-    PoC -->|PoC Info| Exp
-    Exp -->|Exploit Result| Rep
-    Rep -->|Final Report| End
-
-    %% ツール利用の接続（点線）
-    CVE -.-> T_NVD
-    CVE -.-> T_EDB
-    CVE -.-> T_MITRE
-    
-    PoC -.-> T_EDB2
-    PoC -.-> T_GIT
-    
-    Exp -.-> T_EXP1
-    Exp -.-> T_EXP2
+```
+┌─────────────────────────────────────────────────────┐
+│                    Operator                          │
+│           (状態を見て次のアクションを決定)              │
+│                                                      │
+│  investigate_cve / search_poc / run_exploit / report │
+└──────────────────────┬──────────────────────────────┘
+                       │ (条件分岐)
+        ┌──────────────┼──────────────┬──────────────┐
+        ▼              ▼              ▼              ▼
+   CVE Analyst    PoC Search      Exploit        Report
+   (NVD/MITRE)   (GitHub/EDB)    (実行/DRY)     (レポート)
+        │              │              │              │
+        └──────────────┴──────────────┘              │
+                       │                             │
+                       ▼                             ▼
+               Operator (ループ)                   END
 ```
 
+## 🔧 機能
 
+### エージェント構成
 
-1.  **Shared State (`AgentState`):**
-    -   `target_ip` (str)
-    -   `cve_list` (List[str])
-    -   `poc_info` (List[str])
-    -   `exploit_results` (str)
-    -   `final_report` (str)
-    -   `messages` (List[BaseMessage])
+| エージェント | 役割 | 使用API |
+|------------|------|---------|
+| **Operator** | ワークフロー制御、次のアクション決定 | - |
+| **CVE Analyst** | 脆弱性情報の収集・分析 | NVD API, MITRE CVE API |
+| **PoC Search** | PoC/Exploitコードの検索 | GitHub API, ExploitDB |
+| **Exploit** | エクスプロイトの実行（シミュレーション） | - |
+| **Report** | 診断レポートの生成 | - |
 
-2.  **Agents (Nodes):**
-    -   `Operator`: Entry point. Initializes the workflow with the target IP.
-    -   `CVE Analyst`: Uses tools (mock) to search NVD/MITRE for the target IP and updates `cve_list`.
-    -   `PoC Search`: Searches ExploitDB/Github (mock) for the found CVEs and updates `poc_info`.
-    -   `Exploit Agent`: Executes exploit scripts (mock) based on PoC info and updates `exploit_results`.
-    -   `Report Agent`: Aggregates all info into a final report string.
+### 外部API
 
-3.  **Workflow (Graph Edges):**
-    Operator -> CVE Analyst -> PoC Search -> Exploit Agent -> Report Agent -> END
+- **NVD (National Vulnerability Database)**: https://services.nvd.nist.gov
+- **MITRE CVE**: https://cveawg.mitre.org
+- **GitHub Search API**: https://api.github.com/search/repositories
 
-# Requirements
--   **File Structure:** Please propose a clean directory structure (e.g., `main.py`, `state.py`, `agents/`, `tools/`).
--   **LangGraph Implementation:** Use `StateGraph` to connect the nodes.
--   **Tools:** Create dummy/mock functions for the tools (e.g., `search_nvd`, `run_exploit`) using the `@tool` decorator.
--   **Environment:** Use `python-dotenv` to load API keys.
--   **Code:** Provide the full code for `main.py`, `state.py`, and examples for the agents and tools.
+## 🚀 クイックスタート
 
-Please start by showing the file structure, then provide the code for each file.
+### Docker を使用
+
+```bash
+# ビルド
+docker build -t ai-redteam .
+
+# 実行
+docker run -d --rm --name ai-redteam -p 8080:8080 ai-redteam
+
+# ブラウザでアクセス
+open http://localhost:8080
+```
+
+### ローカル環境
+
+```bash
+# 依存関係のインストール
+pip install -r requirements.txt
+
+# 環境変数の設定
+cp .env.example .env
+# .env を編集
+
+# 実行
+python app.py
+```
+
+## 🌐 Web API
+
+### スキャン実行
+
+```bash
+curl -X POST http://localhost:8080/api/run \
+  -H "Content-Type: application/json" \
+  -d '{"target_ip": "log4j", "dry_run": true}'
+```
+
+### レスポンス例
+
+```json
+{
+  "target_ip": "log4j",
+  "cve_list": [
+    "CVE-2019-17571",
+    "CVE-2017-5645"
+  ],
+  "poc_info": [
+    "GitHub: 3件のPoCリポジトリ発見\n  - hillu/local-log4j-vuln-scanner (★374)"
+  ],
+  "exploit_results": "[SUCCESS] ...",
+  "final_report": "..."
+}
+```
+
+### グラフ取得
+
+```bash
+# Mermaid形式
+curl http://localhost:8080/api/graph
+
+# PNG画像
+curl http://localhost:8080/api/graph.png -o graph.png
+```
+
+## 📁 プロジェクト構造
+
+```
+AI_redteam/
+├── app.py                 # Flask Webアプリ
+├── state.py               # 共有状態の定義
+├── agents/
+│   ├── __init__.py
+│   ├── operator.py        # Operator エージェント（ルーティング）
+│   ├── cve_analyst.py     # CVE Analyst エージェント
+│   ├── poc_search.py      # PoC Search エージェント
+│   ├── exploit.py         # Exploit エージェント
+│   └── report.py          # Report エージェント
+├── tools/
+│   ├── __init__.py
+│   └── security_tools.py  # 外部APIツール群
+├── templates/
+│   └── index.html         # Web UI (Tailwind CSS)
+├── Dockerfile
+├── requirements.txt
+└── .env.example
+```
+
+## ⚙️ 環境変数
+
+| 変数名 | 説明 | 必須 |
+|--------|------|------|
+| `TARGET_IP` | デフォルトのターゲット | ✗ |
+| `DRY_RUN` | true の場合、Exploit を実行しない | ✗ |
+| `NVD_API_KEY` | NVD API キー（レート制限緩和） | ✗ |
+| `GITHUB_TOKEN` | GitHub API トークン（レート制限緩和） | ✗ |
+
+## 🔒 注意事項
+
+⚠️ **このツールは教育目的および許可された環境でのみ使用してください。**
+
+- Exploit実行はシミュレーションです
+- 実際のペネトレーションテストには適切な許可が必要です
+- APIにはレート制限があります
+
+## 📜 ライセンス
+
+MIT License

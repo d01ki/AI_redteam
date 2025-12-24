@@ -1,0 +1,15 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.swp
+*.swo
+.env
+.env.local
+.git
+.gitignore
+.venv
+.build
+.cache
+.pytest_cache
+.ipynb_checkpoints
