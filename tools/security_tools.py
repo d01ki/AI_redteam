@@ -1,314 +1,167 @@
-"""
-Security Assessment Tools
-実際のAPIを呼び出すツール群
-"""
+"""セキュリティ診断用のツール群."""
 from __future__ import annotations
 
-import os
-import json
-import hashlib
-from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
-
 import requests
-from langchain_core.tools import tool
-
-
-# =============================================================================
-# キャッシュユーティリティ
-# =============================================================================
-
-_cache: Dict[str, Any] = {}
-_cache_ttl: Dict[str, datetime] = {}
-CACHE_DURATION = timedelta(hours=1)
-
-
-def get_cached(key: str) -> Optional[Any]:
-    """TTL付きキャッシュから取得."""
-    if key in _cache:
-        if datetime.now() < _cache_ttl.get(key, datetime.min):
-            return _cache[key]
-        else:
-            del _cache[key]
-            del _cache_ttl[key]
-    return None
-
-
-def set_cached(key: str, value: Any) -> None:
-    """TTL付きキャッシュに保存."""
-    _cache[key] = value
-    _cache_ttl[key] = datetime.now() + CACHE_DURATION
-
-
-def cache_key(*args) -> str:
-    """引数からキャッシュキーを生成."""
-    return hashlib.md5(json.dumps(args, sort_keys=True).encode()).hexdigest()
-
-
-# =============================================================================
-# NVD (National Vulnerability Database) API
-# =============================================================================
-
-NVD_API_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+import time
+from typing import List, Dict, Any
+from langchain.tools import tool
+import config
 
 
 @tool
-def search_nvd(target: str) -> str:
-    """
-    NVD (National Vulnerability Database) を検索してCVEを取得する。
+def search_nvd_cves(target: str) -> str:
+    """NVD APIを使用してCVE情報を検索します。
     
     Args:
-        target: 検索対象（キーワード、製品名、IPアドレスなど）
+        target: 検索対象のキーワード（例: 'log4j', 'apache', 'CVE-2021-44228'）
     
     Returns:
-        発見されたCVE情報の文字列
+        検索結果のテキスト（CVE IDと概要のリスト）
     """
-    key = cache_key("nvd", target)
-    cached = get_cached(key)
-    if cached:
-        return cached
+    url = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+    headers = {}
+    if config.NVD_API_KEY:
+        headers["apiKey"] = config.NVD_API_KEY
+    
+    params = {
+        "keywordSearch": target,
+        "resultsPerPage": 10,
+    }
     
     try:
-        params = {
-            "keywordSearch": target,
-            "resultsPerPage": 5,
-        }
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
         
-        headers = {}
-        api_key = os.environ.get("NVD_API_KEY")
-        if api_key:
-            headers["apiKey"] = api_key
+        vulnerabilities = data.get("vulnerabilities", [])
+        if not vulnerabilities:
+            return f"CVE情報が見つかりませんでした: {target}"
         
-        response = requests.get(NVD_API_URL, params=params, headers=headers, timeout=30)
+        results = []
+        for vuln in vulnerabilities[:5]:  # 上位5件
+            cve_data = vuln.get("cve", {})
+            cve_id = cve_data.get("id", "N/A")
+            descriptions = cve_data.get("descriptions", [])
+            description = descriptions[0].get("value", "説明なし") if descriptions else "説明なし"
+            results.append(f"- {cve_id}: {description[:100]}...")
         
-        if response.status_code == 200:
-            data = response.json()
-            vulnerabilities = data.get("vulnerabilities", [])
-            
-            if not vulnerabilities:
-                result = f"NVD: {target} に関連するCVEは見つかりませんでした"
-            else:
-                cve_list = []
-                for vuln in vulnerabilities[:5]:
-                    cve = vuln.get("cve", {})
-                    cve_id = cve.get("id", "Unknown")
-                    descriptions = cve.get("descriptions", [])
-                    desc = next((d["value"] for d in descriptions if d["lang"] == "en"), "No description")
-                    short_desc = desc[:100] + "..." if len(desc) > 100 else desc
-                    cve_list.append(f"{cve_id}: {short_desc}")
-                
-                result = f"NVD: {len(cve_list)}件発見\n" + "\n".join(cve_list)
-        else:
-            result = f"NVD: APIエラー (status={response.status_code})"
+        return "\n".join(results)
     
-    except requests.exceptions.Timeout:
-        result = "NVD: タイムアウト"
     except Exception as e:
-        result = f"NVD: エラー - {str(e)[:50]}"
-    
-    set_cached(key, result)
-    return result
-
-
-# =============================================================================
-# MITRE CVE API
-# =============================================================================
-
-MITRE_API_URL = "https://cveawg.mitre.org/api/cve"
+        return f"NVD API エラー: {str(e)}"
 
 
 @tool
-def search_mitre(target: str) -> str:
-    """
-    MITRE CVE データベースを検索する。
+def search_github_pocs(cve_id: str) -> str:
+    """GitHub APIを使用してPoCコードを検索します。
     
     Args:
-        target: 検索対象（CVE-ID または キーワード）
+        cve_id: CVE ID（例: 'CVE-2021-44228'）
     
     Returns:
-        発見されたCVE情報の文字列
+        検索結果のテキスト（リポジトリ名、スター数、URL）
     """
-    key = cache_key("mitre", target)
-    cached = get_cached(key)
-    if cached:
-        return cached
+    url = "https://api.github.com/search/repositories"
+    headers = {}
+    if config.GITHUB_TOKEN:
+        headers["Authorization"] = f"token {config.GITHUB_TOKEN}"
+    
+    params = {
+        "q": f"{cve_id} PoC OR exploit",
+        "sort": "stars",
+        "order": "desc",
+        "per_page": 5,
+    }
     
     try:
-        if target.upper().startswith("CVE-"):
-            url = f"{MITRE_API_URL}/{target.upper()}"
-            response = requests.get(url, timeout=15)
-            
-            if response.status_code == 200:
-                data = response.json()
-                cve_id = data.get("cveMetadata", {}).get("cveId", target)
-                state = data.get("cveMetadata", {}).get("state", "unknown")
-                result = f"MITRE: {cve_id} (state: {state})"
-            else:
-                result = f"MITRE: {target} が見つかりません"
-        else:
-            result = f"MITRE: キーワード '{target}' での検索（CVE-ID形式推奨）"
-    
-    except requests.exceptions.Timeout:
-        result = "MITRE: タイムアウト"
-    except Exception as e:
-        result = f"MITRE: エラー - {str(e)[:50]}"
-    
-    set_cached(key, result)
-    return result
-
-
-# =============================================================================
-# ExploitDB Search
-# =============================================================================
-
-@tool
-def search_exploitdb(cve: str) -> str:
-    """
-    Exploit-DB でCVEに関連するエクスプロイトを検索する。
-    
-    Args:
-        cve: CVE-ID または検索キーワード
-    
-    Returns:
-        発見されたエクスプロイト情報の文字列
-    """
-    key = cache_key("exploitdb", cve)
-    cached = get_cached(key)
-    if cached:
-        return cached
-    
-    try:
-        # ExploitDB公開APIはないため、GitHubミラーを使用
-        # https://gitlab.com/exploit-database/exploitdb
-        if "CVE-" in cve.upper():
-            result = f"ExploitDB: {cve} 関連のエクスプロイトを検索中..."
-        else:
-            result = f"ExploitDB: '{cve}' 関連のエクスプロイトを検索中..."
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        items = data.get("items", [])
+        if not items:
+            return f"PoCが見つかりませんでした: {cve_id}"
+        
+        results = []
+        for repo in items:
+            name = repo.get("full_name", "N/A")
+            stars = repo.get("stargazers_count", 0)
+            url = repo.get("html_url", "")
+            description = repo.get("description", "説明なし")[:80]
+            results.append(f"- {name} (★{stars}): {description}\n  {url}")
+        
+        return "\n\n".join(results)
     
     except Exception as e:
-        result = f"ExploitDB: エラー - {str(e)[:50]}"
-    
-    set_cached(key, result)
-    return result
-
-
-# =============================================================================
-# GitHub PoC Search
-# =============================================================================
-
-GITHUB_API_URL = "https://api.github.com/search/repositories"
+        return f"GitHub API エラー: {str(e)}"
 
 
 @tool
-def search_github(cve: str) -> str:
-    """
-    GitHub でCVEに関連するPoC（Proof of Concept）リポジトリを検索する。
+def simulate_exploit_execution(target: str, poc_description: str, dry_run: bool = True) -> str:
+    """エクスプロイトの実行をシミュレートします。
     
     Args:
-        cve: CVE-ID（例: CVE-2021-44228）
+        target: ターゲット（IP or ホスト名）
+        poc_description: 使用するPoCの説明
+        dry_run: Trueの場合、実際には実行せずシミュレーションのみ
     
     Returns:
-        発見されたPoCリポジトリ情報の文字列
+        実行結果のテキスト
     """
-    key = cache_key("github", cve)
-    cached = get_cached(key)
-    if cached:
-        return cached
-    
-    try:
-        headers = {
-            "Accept": "application/vnd.github.v3+json",
-        }
-        github_token = os.environ.get("GITHUB_TOKEN")
-        if github_token:
-            headers["Authorization"] = f"token {github_token}"
-        
-        # CVE-IDをそのまま検索（シンプルなクエリ）
-        params = {
-            "q": cve,
-            "sort": "stars",
-            "order": "desc",
-            "per_page": 5,
-        }
-        
-        response = requests.get(GITHUB_API_URL, params=params, headers=headers, timeout=15)
-        
-        if response.status_code == 200:
-            data = response.json()
-            items = data.get("items", [])
-            
-            if not items:
-                result = f"GitHub: {cve} に関連するPoCリポジトリは見つかりませんでした"
-            else:
-                repos = []
-                for item in items[:3]:
-                    name = item.get("full_name", "Unknown")
-                    stars = item.get("stargazers_count", 0)
-                    url = item.get("html_url", "")
-                    repos.append(f"  - {name} (★{stars}) {url}")
-                
-                result = f"GitHub: {len(repos)}件のPoCリポジトリ発見\n" + "\n".join(repos)
-        elif response.status_code == 403:
-            result = "GitHub: APIレート制限に達しました"
-        else:
-            result = f"GitHub: APIエラー (status={response.status_code})"
-    
-    except requests.exceptions.Timeout:
-        result = "GitHub: タイムアウト"
-    except Exception as e:
-        result = f"GitHub: エラー - {str(e)[:50]}"
-    
-    set_cached(key, result)
-    return result
-
-
-# =============================================================================
-# Exploit Execution (Simulated / Sandboxed)
-# =============================================================================
-
-@tool
-def run_exploit_script(poc_ref: str, dry_run: bool = False) -> str:
-    """
-    エクスプロイトを実行する（シミュレーション）。
-    
-    警告: 実際のエクスプロイト実行は許可された環境でのみ行ってください。
-    
-    Args:
-        poc_ref: PoCの参照（URL、パス、または識別子）
-        dry_run: Trueの場合は実行をスキップ
-    
-    Returns:
-        実行結果の文字列
-    """
-    if dry_run:
-        return f"[DRY-RUN] {poc_ref}: 実行をスキップしました"
-    
     import random
     
-    outcomes = [
-        ("success", "ターゲットへのアクセスに成功しました（シミュレーション）"),
-        ("failed", "接続がタイムアウトしました（シミュレーション）"),
-        ("failed", "ターゲットがパッチ適用済みです（シミュレーション）"),
-        ("failed", "認証が必要です（シミュレーション）"),
-    ]
+    if dry_run:
+        # シミュレーション（ランダムで成功/失敗）
+        success = random.choice([True, False])
+        if success:
+            return f"[SUCCESS] {target} に対するエクスプロイトが成功しました（シミュレーション）\nPoC: {poc_description[:50]}..."
+        else:
+            return f"[FAILED] {target} に対するエクスプロイトが失敗しました（シミュレーション）\nPoC: {poc_description[:50]}..."
+    else:
+        # 実際の実行は安全上の理由から未実装
+        return "[INFO] 実際のエクスプロイト実行は未実装です。dry_run=Trueでシミュレーションを実行してください。"
+
+
+@tool  
+def analyze_cve_severity(cve_id: str) -> str:
+    """CVEの深刻度を分析します。
     
-    status, message = random.choice(outcomes)
+    Args:
+        cve_id: CVE ID（例: 'CVE-2021-44228'）
     
-    return f"[{status.upper()}] {poc_ref}: {message}"
-
-
-# =============================================================================
-# ツールリスト（エクスポート用）
-# =============================================================================
-
-ALL_TOOLS = [
-    search_nvd,
-    search_mitre,
-    search_exploitdb,
-    search_github,
-    run_exploit_script,
-]
-
-CVE_TOOLS = [search_nvd, search_mitre, search_exploitdb]
-POC_TOOLS = [search_exploitdb, search_github]
-EXPLOIT_TOOLS = [run_exploit_script]
+    Returns:
+        深刻度分析の結果
+    """
+    url = f"https://services.nvd.nist.gov/rest/json/cves/2.0"
+    headers = {}
+    if config.NVD_API_KEY:
+        headers["apiKey"] = config.NVD_API_KEY
+    
+    params = {"cveId": cve_id}
+    
+    try:
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        vulnerabilities = data.get("vulnerabilities", [])
+        if not vulnerabilities:
+            return f"CVE {cve_id} の情報が見つかりませんでした"
+        
+        vuln = vulnerabilities[0]
+        metrics = vuln.get("cve", {}).get("metrics", {})
+        
+        # CVSS v3.x
+        cvss_v3 = metrics.get("cvssMetricV31", [{}])[0] if metrics.get("cvssMetricV31") else {}
+        if not cvss_v3:
+            cvss_v3 = metrics.get("cvssMetricV30", [{}])[0] if metrics.get("cvssMetricV30") else {}
+        
+        cvss_data = cvss_v3.get("cvssData", {})
+        base_score = cvss_data.get("baseScore", "N/A")
+        base_severity = cvss_data.get("baseSeverity", "N/A")
+        vector = cvss_data.get("vectorString", "N/A")
+        
+        return f"CVE {cve_id}\n深刻度: {base_severity} (スコア: {base_score})\nベクター: {vector}"
+    
+    except Exception as e:
+        return f"深刻度分析エラー: {str(e)}"

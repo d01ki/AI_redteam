@@ -1,49 +1,38 @@
 from __future__ import annotations
 
-from typing import List, Literal, TypedDict
-
+from typing import TypedDict, List, Annotated
+import operator
 from langchain_core.messages import BaseMessage
 
 
-# Operatorが決定する次のアクション
-NextAction = Literal[
-    "investigate_cve",
-    "search_poc", 
-    "run_exploit",
-    "generate_report",
-    "retry_cve",
-    "retry_poc",
-    "done"
-]
-
-
-class AgentState(TypedDict, total=False):
-    """Shared state flowing through the LangGraph workflow."""
-
-    # 入力
+class AgentState(TypedDict):
+    """マルチエージェント診断ワークフローの状態."""
+    
+    # 基本設定
     target_ip: str
     dry_run: bool
     
-    # Operator制御
-    next_action: NextAction
+    # ワークフロー制御
+    next_action: str
     phase_history: List[str]
     
-    # CVE分析結果
+    # CVE情報
     cve_list: List[str]
     cve_search_count: int
+    cve_details: str  # CVE詳細情報（テキスト）
     
-    # PoC検索結果
+    # PoC情報
     poc_info: List[str]
     poc_search_count: int
     
-    # Exploit結果
+    # Exploit情報
     exploit_results: str
     exploit_success: bool
     exploit_attempts: int
     max_exploit_attempts: int
     
-    # 最終レポート
+    # レポート
     final_report: str
     
-    # メッセージ履歴
-    messages: List[BaseMessage]
+    # メッセージ（LangChainのadd_messagesと互換）
+    messages: Annotated[List[BaseMessage], operator.add]
